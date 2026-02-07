@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Document System</title>
+
+  <!-- Optional external CSS (safe to keep) -->
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Top navigation -->
+  <div class="top-bar">
+    <div class="dropdown">
+      <button class="dropbtn">📂 Recents ⬇</button>
+      <div class="dropdown-content" id="recentsList">
+        <p style="color: gray; font-size: 14px; padding: 8px;">
+          No recent documents
+        </p>
+      </div>
+    </div>
+
+    <div class="settings">
+      <button id="settingsBtn" type="button">⚙️</button>
+      <div class="settings-panel" id="settingsPanel">
+        <label class="switch">
+          <input type="checkbox" id="themeToggle" />
+          <span class="slider"></span>
+        </label>
+        <span id="themeLabel">🌞 Light Mode</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main container -->
+  <div class="container">
+    <h2 id="greetingMsg">Hello!</h2>
+    <h1>📄 AI Document Intelligence</h1>
+
+    <!-- File Upload -->
+    <div class="custom-upload">
+      <label for="fileInput">📁 Upload Document</label>
+      <input type="file" id="fileInput" />
+      <p id="fileDetails"></p>
+    </div>
+
+    <!-- Question Input (ID FIXED & CONSISTENT) -->
+    <div class="input-group">
+      <input
+        type="text"
+        id="questionInput"
+        placeholder="Ask anything about the document..."
+      />
+    </div>
+
+    <!-- Submit Button -->
+    <button id="submitBtn" type="button">Submit</button>
+
+    <!-- Backend / Logic Response -->
+    <div id="responseBox"></div>
+
+    <!-- Status / Error Messages -->
+    <div id="messageBox"></div>
+  </div>
+
+  <!-- Floating Chatbot -->
+  <div class="chatbot-wrapper">
+    <div class="chatbot-button" id="chatbotToggle">💬</div>
+    <div class="chatbot-panel" id="chatbotPanel">
+      <input
+        type="text"
+        id="chatbotQuery"
+        placeholder="Type your query..."
+      />
+      <button id="chatbotSend" type="button">Send</button>
+    </div>
+  </div>
+
+  <!-- JavaScript -->
+  <script src="script.js"></script>
+
+</body>
+</html>
