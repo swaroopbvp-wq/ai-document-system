@@ -1,12 +1,17 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database import init_db, insert_document, insert_query, get_connection
-import re
+from vector_store import add_document, search
 
+import pdfplumber
+from docx import Document
+import io
+
+
+# ------------------ FASTAPI APP ------------------
 app = FastAPI()
 
-# ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,97 +20,153 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- INIT DB ----------
+# ------------------ INIT DATABASE ------------------
 init_db()
 
-# ---------- REQUEST MODELS ----------
-class UploadRequest(BaseModel):
-    filename: str
-    content: str
+
+# ------------------ LOAD FAISS FROM DB ON START ------------------
+@app.on_event("startup")
+def load_existing_documents():
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, content FROM documents")
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    for row in rows:
+        if row["content"]:  # avoid empty documents
+            add_document(row["id"], row["content"])
+
+    print(f"Loaded {len(rows)} documents into FAISS.")
 
 
+# ------------------ REQUEST MODELS ------------------
 class AskRequest(BaseModel):
     document_id: int
     question: str
 
 
-# ---------- HEALTH CHECK ----------
+# ------------------ HEALTH CHECK ------------------
 @app.get("/ping")
 def ping():
     return {"status": "Backend OK"}
 
 
-# ---------- STEP 4B: FACT EXTRACTION ----------
-def extract_facts(document: str):
-    facts = {}
-
-    # Invoice Date
-    date_match = re.search(
-        r"(invoice\s*date|date)\s*(is|:|-)?\s*([a-z0-9\s]+)",
-        document,
-        re.I
-    )
-    if date_match:
-        facts["invoice_date"] = date_match.group(3).strip()
-
-    # Total Amount (handles "is", currency, words)
-    amount_match = re.search(
-        r"(total\s*amount)\s*(is|:|-)?\s*(\d+)",
-        document,
-        re.I
-    )
-    if amount_match:
-        facts["total_amount"] = amount_match.group(3).strip()
-
-    return facts
-
-
-# ---------- UPLOAD DOCUMENT ----------
+# ------------------ UPLOAD DOCUMENT ------------------
 @app.post("/upload")
-def upload_doc(data: UploadRequest):
-    doc_id = insert_document(data.filename, data.content)
+async def upload_doc(file: UploadFile = File(...)):
+
+    filename = file.filename.lower()
+    raw_content = await file.read()
+
+    extracted_text = ""
+
+    try:
+
+        # TXT
+        if filename.endswith(".txt"):
+            extracted_text = raw_content.decode("utf-8")
+
+        # PDF
+        elif filename.endswith(".pdf"):
+            with pdfplumber.open(io.BytesIO(raw_content)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        extracted_text += text + "\n"
+
+        # DOCX
+        elif filename.endswith(".docx"):
+            doc = Document(io.BytesIO(raw_content))
+            for para in doc.paragraphs:
+                extracted_text += para.text + "\n"
+
+        else:
+            return {"message": "Unsupported file format"}
+
+    except Exception as e:
+        print("Extraction error:", e)
+        return {"message": "Document parsing failed"}
+
+    # ---------- DEBUG ----------
+    print("Extracted text length:", len(extracted_text))
+    print("Preview:", extracted_text[:300])
+    # ---------------------------
+
+    # Prevent empty documents
+    if not extracted_text.strip():
+        return {"message": "No readable text found in document"}
+
+    # Save to database
+    doc_id = insert_document(filename, extracted_text)
+
+    # Add to FAISS
+    add_document(doc_id, extracted_text)
+
     return {
-        "message": "✅ Document uploaded successfully",
+        "message": "Document uploaded successfully",
         "document_id": doc_id
     }
 
 
-# ---------- STEP 4C + TEST 3 ----------
+# ------------------ ASK (LOCAL RAG MODE) ------------------
 @app.post("/ask")
 def ask_doc(data: AskRequest):
+
+    print("\n--- NEW ASK REQUEST ---")
+    print("Document ID:", data.document_id)
+    print("Question:", data.question)
+
+    chunks = search(
+        query=data.question,
+        document_id=data.document_id
+    )
+
+    print("Retrieved chunks:", chunks)
+    print("Chunks count:", len(chunks))
+
+    if not chunks:
+        answer = "No relevant content found in this document."
+    else:
+        answer = "\n\n".join(chunks)
+
+    # Save history
+    insert_query(data.document_id, data.question, answer)
+
+    return {"answer": answer}
+
+
+# ------------------ GET HISTORY ------------------
+@app.get("/history/{document_id}")
+def get_history(document_id: int):
+
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT content FROM documents WHERE id = ?",
-        (data.document_id,)
+        """
+        SELECT question, answer, asked_at
+        FROM queries
+        WHERE document_id = ?
+        ORDER BY asked_at DESC
+        """,
+        (document_id,)
     )
-    row = cursor.fetchone()
+
+    rows = cursor.fetchall()
     conn.close()
 
-    if not row:
-        return {"answer": "❌ Document not found"}
+    if not rows:
+        return {"message": "No history found for this document."}
 
-    document = row["content"]
-    question = data.question.lower()
-
-    facts = extract_facts(document)
-
-    # ---------- DETERMINISTIC ANSWERING ----------
-    if "date" in question:
-        if "invoice_date" in facts:
-            answer = f"The invoice date is {facts['invoice_date']}."
-        else:
-            answer = "❌ Invoice date not found in the document."
-
-    elif "total" in question or "amount" in question:
-        if "total_amount" in facts:
-            answer = f"The total amount is {facts['total_amount']} rupees."
-        else:
-            answer = "❌ Total amount not found in the document."
-
-    else:
-        answer = "❌ I don't understand this question yet."
-
-    insert_query(data.document_id, data.question, answer)
-    return {"answer": answer}
+    return [
+        {
+            "question": row["question"],
+            "answer": row["answer"],
+            "asked_at": row["asked_at"]
+        }
+        for row in rows
+    ]
